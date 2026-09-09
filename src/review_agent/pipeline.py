@@ -1,0 +1,236 @@
+"""End-to-end review pipeline (PRD s4).
+
+diff -> Java context -> LLM (one call per changed file) -> validate -> dedup -> score
+-> publish -> report.
+
+Failures are explicit: a file whose LLM call or JSON parse failed is recorded as
+``status='failed'`` and never counted as a successful review.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from . import logging as L
+from .context.builder import build_review_context
+from .context.diff_parser import hunk_new_line_span
+from .context.models import FileChange, PRInfo
+from .context.render import render_for_file
+from .context.repo_view import LocalRepoView
+from .git_ops import commit_messages, current_sha, resolve_sha, unified_diff
+from .llm.base import build_provider, system_prompt, user_prompt
+from .llm.contract import review_file
+from .models import Finding, GateResult, ReviewReport
+from .publish.formatter import inline_comment, summary_comment
+from .publish.github_client import GitHubClient, GitHubError
+from .review.dedup import dedupe_findings
+from .review.scoring import evaluate_gate
+from .review.validator import validate_findings
+
+_REVIEWABLE_STATUSES = {"added", "modified", "renamed"}
+
+
+@dataclass
+class RunInputs:
+    repo_path: str
+    pr_id: Optional[int] = None
+    base: Optional[str] = None
+    head: Optional[str] = None
+    commit: Optional[str] = None
+    overlay_dir: str = ""
+    publish: bool = False
+    status_url: str = ""
+    diff_text: Optional[str] = None  # override: skip GitHub / git and use this diff
+
+
+def _make_client(settings) -> Optional[GitHubClient]:
+    owner, repo = settings.github_owner_repo
+    if owner and repo and settings.gh_token():
+        return GitHubClient(owner, repo, settings.gh_token(), settings.github_api_url)
+    return None
+
+
+def _gather_pr_info(inp: RunInputs, client: Optional[GitHubClient]) -> PRInfo:
+    if client and inp.pr_id is not None:
+        pr = client.get_pull_request(inp.pr_id)
+        msgs = [m.split("\n")[0] for m in client.get_pr_commits(inp.pr_id)]
+        return PRInfo(
+            id=inp.pr_id,
+            title=pr.get("title") or "",
+            description=pr.get("body") or "",
+            source_branch=(pr.get("head") or {}).get("ref") or inp.head or "",
+            target_branch=(pr.get("base") or {}).get("ref") or inp.base or "",
+            commit_messages=msgs,
+        )
+    return PRInfo(
+        id=inp.pr_id,
+        title="",
+        description="",
+        source_branch=inp.head or "",
+        target_branch=inp.base or "",
+        commit_messages=(commit_messages(inp.repo_path, inp.base, inp.head)
+                         if inp.base and inp.head else []),
+    )
+
+
+def _resolve_diff(inp: RunInputs, client: Optional[GitHubClient]) -> str:
+    if inp.diff_text is not None:
+        L.step("using supplied diff text")
+        return inp.diff_text
+    if client and inp.pr_id is not None:
+        L.step(f"fetching PR #{inp.pr_id} diff from GitHub")
+        return client.get_diff(inp.pr_id)
+    if not (inp.base and inp.head):
+        raise ValueError("need --pr (with GitHub creds) or both --base and --head")
+    L.step(f"computing local diff {inp.base}...{inp.head}")
+    return unified_diff(inp.repo_path, inp.base, inp.head)
+
+
+def _resolve_commit(inp: RunInputs, client: Optional[GitHubClient], pr_info: PRInfo) -> Optional[str]:
+    if inp.commit:
+        return inp.commit
+    if client and inp.pr_id is not None:
+        try:
+            return (client.get_pull_request(inp.pr_id).get("head") or {}).get("sha")
+        except GitHubError:
+            return None
+    for attempt in (lambda: resolve_sha(inp.repo_path, inp.head) if inp.head else None,
+                    lambda: current_sha(inp.repo_path)):
+        try:
+            sha = attempt()
+            if sha:
+                return sha
+        except Exception:
+            continue
+    return None
+
+
+def _spans_by_file(changes: List[FileChange]) -> Dict[str, list]:
+    return {c.file: [hunk_new_line_span(h) for h in c.hunks] for c in changes}
+
+
+def run(settings, inp: RunInputs) -> ReviewReport:
+    started = time.monotonic()
+    client = _make_client(settings)
+    provider = build_provider(settings)
+    L.step(f"LLM provider: {provider.name}")
+
+    diff_text = _resolve_diff(inp, client)
+    pr_info = _gather_pr_info(inp, client)
+    raw_comments = client.get_pr_comments(inp.pr_id) if (client and inp.pr_id is not None) else None
+
+    repo = LocalRepoView(inp.repo_path, inp.overlay_dir)
+    ctx = build_review_context(pr_info, diff_text, repo, settings, raw_comments)
+    L.step(f"diff parsed: {len(ctx.changes)} changed file(s); "
+           f"context {ctx.budget.get('used')}/{ctx.budget.get('limit')} tok, "
+           f"{len(ctx.budget.get('dropped', []))} dropped")
+
+    commit_sha = _resolve_commit(inp, client, pr_info)
+
+    if inp.publish and client and commit_sha:
+        _safe(lambda: client.set_build_status(commit_sha, "pending", inp.status_url,
+                                              description="AI review running"))
+
+    # --- LLM review: one call per changed file ------------------------
+    system = system_prompt()
+    owner, repo_name = settings.github_owner_repo
+    repo_slug = f"{owner}/{repo_name}" if owner else (settings.github_repository or inp.repo_path)
+
+    file_inputs: Dict[str, str] = {}
+    results = []
+    for change in ctx.changes:
+        if change.status not in _REVIEWABLE_STATUSES or not change.hunks:
+            continue
+        ctx_text = render_for_file(ctx, change.file)
+        file_inputs[change.file] = ctx_text
+        up = user_prompt(context=ctx_text, target_file=change.file, pr_id=pr_info.id,
+                         repo=repo_slug, target_branch=pr_info.target_branch,
+                         source_branch=pr_info.source_branch)
+        L.step(f"LLM review: {change.file}")
+        res = review_file(provider, system, up, change.file)
+        if res.status == "failed":
+            L.warn(f"{change.file}: {res.error}")
+        else:
+            L.step(f"{change.file}: {len(res.findings)} raw finding(s)"
+                   + (" (repaired)" if res.repaired else ""))
+        results.append(res)
+
+    raw_findings: List[Finding] = [f for r in results if r.status == "ok" for f in r.findings]
+    failed_files = [r.file for r in results if r.status == "failed"]
+    all_failed = bool(results) and all(r.status == "failed" for r in results)
+
+    # --- validate -> dedup -> score ------------------------------
+    kept, dropped = validate_findings(raw_findings, ctx.changes, file_inputs, settings.min_confidence)
+    L.step(f"validation: {len(raw_findings)} -> {len(kept)} finding(s) ({len(dropped)} dropped)")
+    findings = dedupe_findings(kept)
+    if len(findings) != len(kept):
+        L.step(f"dedup: {len(kept)} -> {len(findings)} finding(s)")
+
+    gate = evaluate_gate(findings, settings)
+    if all_failed:
+        gate = GateResult(status="CHANGES REQUESTED", exit_code=1, score=gate.score,
+                          counts=gate.counts,
+                          reasons=gate.reasons + ["every changed file failed LLM review"])
+    L.step(f"gate: {gate.status} (score {gate.score}, exit {gate.exit_code})")
+
+    report = ReviewReport(
+        repo=repo_slug, pr=pr_info.id, base=pr_info.target_branch, head=pr_info.source_branch,
+        commit=commit_sha, provider=provider.name,
+        review_ok=not failed_files,
+        summary=_overall_summary(results, gate),
+        files_reviewed=results, findings=findings, dropped=dropped, gate=gate,
+        duration_seconds=round(time.monotonic() - started, 2),
+        context_budget=ctx.budget,
+    )
+
+    if inp.publish and client:
+        _publish(client, pr_info, commit_sha, findings, gate, provider.name, failed_files,
+                 inp.status_url, _spans_by_file(ctx.changes))
+    elif inp.publish:
+        L.warn("--publish set but no GitHub client (need GITHUB_TOKEN + GITHUB_REPOSITORY); skipping")
+
+    L.step(f"done in {report.duration_seconds}s")
+    return report
+
+
+def _overall_summary(results, gate: GateResult) -> str:
+    parts = [r.summary for r in results if r.status == "ok" and r.summary]
+    return (f"{gate.status} — risk {gate.score}/100. " + " ".join(parts)).strip()
+
+
+def _publish(client, pr_info, commit_sha, findings, gate, provider_name, failed_files,
+             status_url, spans_by_file):
+    if pr_info.id is not None:
+        unplaced: List[Finding] = []
+        for f in findings:
+            placeable = commit_sha and any(lo <= f.line <= hi
+                                           for lo, hi in spans_by_file.get(f.file, []))
+            if placeable:
+                try:
+                    client.post_inline_comment(pr_info.id, commit_sha, f.file, f.line,
+                                               inline_comment(f))
+                    continue
+                except GitHubError as e:
+                    L.warn(f"inline comment failed for {f.file}:{f.line}: {e}")
+            unplaced.append(f)
+        body = summary_comment(findings, gate, provider=provider_name,
+                               failed_files=failed_files, unplaced=unplaced)
+        _safe(lambda: client.post_summary_comment(pr_info.id, body))
+        L.step("posted summary + inline comments")
+    else:
+        L.warn("no PR id -> commit status only")
+
+    if commit_sha:
+        state = "success" if gate.exit_code == 0 else "failure"
+        _safe(lambda: client.set_build_status(
+            commit_sha, state, status_url, description=f"{gate.status} · risk {gate.score}/100"))
+
+
+def _safe(fn):
+    try:
+        return fn()
+    except Exception as e:  # publishing must never crash the run
+        L.warn(f"publish step failed: {e}")
+        return None
