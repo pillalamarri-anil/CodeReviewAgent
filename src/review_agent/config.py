@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_SECRET_FIELDS = {"azure_openai_api_key", "github_token"}
+_SECRET_FIELDS = {"openai_api_key", "github_token"}
 
 
 class Settings(BaseSettings):
@@ -24,10 +24,9 @@ class Settings(BaseSettings):
 
     # --- LLM provider ---------------------------------------------------
     llm_provider: str = "mock"
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[SecretStr] = None
-    azure_openai_deployment: Optional[str] = None
-    azure_openai_api_version: str = "2024-06-01"
+    openai_api_key: Optional[SecretStr] = None
+    openai_model: Optional[str] = "gpt-4o"
+    openai_base_url: Optional[str] = None
     llm_max_tokens: int = 4000
     llm_timeout_seconds: int = 90
 
@@ -64,8 +63,8 @@ class Settings(BaseSettings):
         owner, _, repo = self.github_repository.partition("/")
         return owner, repo
 
-    def azure_key(self) -> Optional[str]:
-        return self.azure_openai_api_key.get_secret_value() if self.azure_openai_api_key else None
+    def openai_key(self) -> Optional[str]:
+        return self.openai_api_key.get_secret_value() if self.openai_api_key else None
 
     def gh_token(self) -> Optional[str]:
         return self.github_token.get_secret_value() if self.github_token else None

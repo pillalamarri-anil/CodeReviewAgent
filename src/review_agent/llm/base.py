@@ -1,6 +1,6 @@
 """LLM provider protocol + prompt loading.
 
-One real provider is used live in the demo (``azure_openai``); ``mock`` exists only for
+One real provider is used live in the demo (``openai``); ``mock`` exists only for
 tests and offline dev (PRD s6).
 """
 
@@ -49,8 +49,8 @@ def build_provider(settings):
         from .mock import MockProvider
 
         return MockProvider()
-    if provider in ("azure_openai", "azure"):
-        from .azure_openai import AzureOpenAIProvider
+    if provider == "openai":
+        from .openai_provider import OpenAIProvider
 
-        return AzureOpenAIProvider(settings)
-    raise LLMError(f"unknown LLM_PROVIDER: {settings.llm_provider!r} (use 'azure_openai' or 'mock')")
+        return OpenAIProvider(settings)
+    raise LLMError(f"unknown LLM_PROVIDER: {settings.llm_provider!r} (use 'openai' or 'mock')")

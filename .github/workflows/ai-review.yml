@@ -3,8 +3,7 @@
 # It checks out the sample repo + this agent, runs the review against the real PR
 # diff, posts inline + summary comments, and fails the check on a quality-gate breach.
 #
-# Required repo secrets:  AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY,
-#                         AZURE_OPENAI_DEPLOYMENT   (AZURE_OPENAI_API_VERSION optional)
+# Required repo secrets:  OPENAI_API_KEY   (OPENAI_MODEL, OPENAI_BASE_URL optional)
 # Required repo variable:  AI_REVIEW_AGENT_REPO   e.g. "your-org/review-agent"
 #                          AI_REVIEW_AGENT_REF    e.g. "main"  (optional, defaults to main)
 
@@ -53,11 +52,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          LLM_PROVIDER: azure_openai
-          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
-          AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION || '2024-06-01' }}
+          LLM_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || 'gpt-4o' }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         run: |
           python -m review_agent \
             --repo . \

@@ -4,7 +4,7 @@ Reviews real GitHub pull requests on a Java Spring Boot repo with a real LLM, po
 inline + summary findings on the PR, and drives a quality gate (exit 0/1).
 
 Implements **P0** of `coderepo/PRD.md`. One Python app, config-driven, GitHub +
-Azure OpenAI. `mock` provider exists for tests / offline only.
+OpenAI. `mock` provider exists for tests / offline only.
 
 ```
 diff  ->  Java context  ->  LLM (1 call / changed file)  ->  validate  ->  dedup
@@ -29,7 +29,7 @@ LLM_PROVIDER=mock python -m review_agent \
   --overlay ./overlay --no-publish --report /tmp/review-report.json
 ```
 
-For a **real** review, copy `.env.example` to `.env` and fill in the Azure OpenAI +
+For a **real** review, copy `.env.example` to `.env` and fill in the OpenAI +
 GitHub values, then:
 
 ```bash
@@ -54,8 +54,8 @@ Exit code: `0` = PASS, `1` = CHANGES REQUESTED (or every file failed LLM review)
 
 ## Configuration (env / `.env`, see `.env.example`)
 
-`LLM_PROVIDER` (`azure_openai` \| `mock`), `AZURE_OPENAI_ENDPOINT` / `_API_KEY` /
-`_DEPLOYMENT` / `_API_VERSION`, `GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
+`LLM_PROVIDER` (`openai` \| `mock`), `OPENAI_API_KEY` / `_MODEL` / `_BASE_URL`,
+`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
 `MIN_CONFIDENCE` (0.75), `MAX_CONTEXT_TOKENS` (8000),
 `MAX_CRITICAL` / `MAX_HIGH` / `MAX_MEDIUM` (0 / 0 / 5). Secrets come only from the
 environment and are never logged.
@@ -79,7 +79,7 @@ confidence alone. Survivors are de-duplicated on
 `.github/workflows/ai-review.yml` is written for the **sample repo**, not this one.
 Copy it into `BookMyShow/.github/workflows/`, then in that repo set:
 
-- secrets: `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`
+- secrets: `OPENAI_API_KEY` (optionally `OPENAI_MODEL`, `OPENAI_BASE_URL`)
 - variables: `AI_REVIEW_AGENT_REPO` (this repo's `owner/name`), `AI_REVIEW_AGENT_REF`
 
 It triggers on `pull_request`, runs the agent against the PR diff, posts comments +
@@ -100,7 +100,7 @@ The sample repo does not yet ship review knowledge, so `overlay/` provides
 src/review_agent/
   cli.py  config.py  models.py  pipeline.py  git_ops.py  logging.py
   context/   diff parse, Java brace-scanner extraction, doc/rule selection, budgeted assembly, render
-  llm/       provider protocol, azure_openai, mock, strict-JSON contract + 1 repair retry
+  llm/       provider protocol, openai_provider, mock, strict-JSON contract + 1 repair retry
   review/    validator, dedup, scoring + gate
   publish/   github_client (sole GitHub API surface), comment formatter
   report/    review-report.json writer
