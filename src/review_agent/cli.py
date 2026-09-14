@@ -32,6 +32,12 @@ def _parse_args(argv):
     pub.add_argument("--no-publish", dest="publish", action="store_false",
                      help="local run: write the report only (default)")
     p.set_defaults(publish=False)
+    find = p.add_mutually_exclusive_group()
+    find.add_argument("--show-findings", dest="show_findings", action="store_true",
+                      help="print the full per-finding review summary to the console (default)")
+    find.add_argument("--no-show-findings", dest="show_findings", action="store_false",
+                      help="print only the one-line gate result, not each finding")
+    p.set_defaults(show_findings=True)
     return p.parse_args(argv)
 
 
@@ -68,6 +74,41 @@ def _print_context_summary(summary: dict) -> None:
           file=sys.stderr)
 
 
+_SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+_SEV_EMOJI = {"CRITICAL": "🟥", "HIGH": "🟧", "MEDIUM": "🟨", "LOW": "🟦"}
+
+
+def _print_findings_summary(report) -> None:
+    """Full per-finding review summary on the console (demo visibility)."""
+    print("\n=== CODE REVIEW SUMMARY ===", file=sys.stderr)
+    if report.summary:
+        print(report.summary, file=sys.stderr)
+
+    findings = sorted(report.findings,
+                      key=lambda f: (_SEV_ORDER[f.severity.value], -f.confidence))
+    if not findings:
+        print("\nNo issues found on the changed lines.", file=sys.stderr)
+    else:
+        print(f"\n{len(findings)} finding(s):", file=sys.stderr)
+        for f in findings:
+            print(f"\n{_SEV_EMOJI[f.severity.value]} {f.severity.value} | {f.category.value} "
+                  f"— {f.title}", file=sys.stderr)
+            print(f"  {f.file}:{f.line}  (confidence {f.confidence:.2f})", file=sys.stderr)
+            print(f"  {f.description.strip()}", file=sys.stderr)
+            print(f"  Fix: {f.recommendation.strip()}", file=sys.stderr)
+
+    failed = [fr.file for fr in report.files_reviewed if fr.status == "failed"]
+    if failed:
+        print("\nFiles that failed LLM review (not reviewed): " + ", ".join(failed),
+              file=sys.stderr)
+
+    if report.dropped:
+        print(f"\n{len(report.dropped)} finding(s) dropped during validation:", file=sys.stderr)
+        for d in report.dropped:
+            print(f"  - {d.finding.title} ({d.finding.file}:{d.finding.line}) — {d.reason}",
+                  file=sys.stderr)
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     settings = load_settings()
@@ -88,6 +129,8 @@ def main(argv=None) -> int:
     L.step(f"report written: {out}")
 
     _print_context_summary(report.context_summary)
+    if args.show_findings:
+        _print_findings_summary(report)
 
     gate = report.gate
     print(f"\n{gate.status}  score={gate.score}/100  "
