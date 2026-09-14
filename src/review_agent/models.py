@@ -110,3 +110,4 @@ class ReviewReport(BaseModel):
     gate: Optional[GateResult] = None
     duration_seconds: float = 0.0
     context_budget: dict = Field(default_factory=dict)
+    context_summary: dict = Field(default_factory=dict)

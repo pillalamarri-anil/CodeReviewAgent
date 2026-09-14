@@ -111,6 +111,27 @@ def _spans_by_file(changes: List[FileChange]) -> Dict[str, list]:
     return {c.file: [hunk_new_line_span(h) for h in c.hunks] for c in changes}
 
 
+def _context_summary(ctx) -> dict:
+    """Everything the LLM actually saw, for the demo / audit trail (not raw content)."""
+    return {
+        "changed_files": [
+            {"file": c.file, "status": c.status, "language": c.language,
+             "hunks": len(c.hunks)}
+            for c in ctx.changes
+        ],
+        "rules_loaded": len(ctx.rules),
+        "knowledge_docs": [
+            {"path": k.path, "selector": k.selector, "tokens": k.tokens}
+            for k in ctx.knowledge
+        ],
+        "code_context": [
+            {"file": c.file, "reason": c.reason, "symbol": c.symbol, "tokens": c.tokens}
+            for c in ctx.code
+        ],
+        "comments_included": len(ctx.comments),
+    }
+
+
 def run(settings, inp: RunInputs) -> ReviewReport:
     started = time.monotonic()
     client = _make_client(settings)
@@ -126,6 +147,18 @@ def run(settings, inp: RunInputs) -> ReviewReport:
     L.step(f"diff parsed: {len(ctx.changes)} changed file(s); "
            f"context {ctx.budget.get('used')}/{ctx.budget.get('limit')} tok, "
            f"{len(ctx.budget.get('dropped', []))} dropped")
+    L.step("changed files: " + ", ".join(c.file for c in ctx.changes))
+    if ctx.knowledge:
+        L.step("docs used: " + ", ".join(f"{k.path} ({k.selector})" for k in ctx.knowledge))
+    else:
+        L.step("docs used: none")
+    L.step(f"rules loaded: {len(ctx.rules)}")
+    if ctx.code:
+        by_reason: Dict[str, int] = {}
+        for slice_ in ctx.code:
+            by_reason[slice_.reason] = by_reason.get(slice_.reason, 0) + 1
+        L.step("code context: " + ", ".join(f"{n} {r}" for r, n in by_reason.items())
+               + " -- " + ", ".join(sorted({s.file for s in ctx.code})))
 
     commit_sha = _resolve_commit(inp, client, pr_info)
 
@@ -183,6 +216,7 @@ def run(settings, inp: RunInputs) -> ReviewReport:
         files_reviewed=results, findings=findings, dropped=dropped, gate=gate,
         duration_seconds=round(time.monotonic() - started, 2),
         context_budget=ctx.budget,
+        context_summary=_context_summary(ctx),
     )
 
     if inp.publish and client:

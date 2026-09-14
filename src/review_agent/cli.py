@@ -35,6 +35,39 @@ def _parse_args(argv):
     return p.parse_args(argv)
 
 
+def _print_context_summary(summary: dict) -> None:
+    """Human-readable 'what did the agent actually look at' block (demo visibility)."""
+    if not summary:
+        return
+    print("\n=== CONTEXT USED ===", file=sys.stderr)
+
+    print(f"Changed files ({len(summary.get('changed_files', []))}):", file=sys.stderr)
+    for f in summary.get("changed_files", []):
+        print(f"  - {f['file']}  [{f['status']}, {f['language'] or 'unknown'}, "
+              f"{f['hunks']} hunk(s)]", file=sys.stderr)
+
+    docs = summary.get("knowledge_docs", [])
+    print(f"\nKnowledge docs read ({len(docs)}):", file=sys.stderr)
+    for d in docs:
+        print(f"  - {d['path']}  (selector: {d['selector']}, {d['tokens']} tok)", file=sys.stderr)
+    if not docs:
+        print("  (none)", file=sys.stderr)
+
+    print(f"\nReview rules loaded: {summary.get('rules_loaded', 0)}", file=sys.stderr)
+
+    code = summary.get("code_context", [])
+    print(f"\nSource files pulled in as supporting code context ({len(code)} snippet(s)):",
+          file=sys.stderr)
+    for c in code:
+        print(f"  - {c['file']}  [{c['reason']}: {c['symbol']}, {c['tokens']} tok]",
+              file=sys.stderr)
+    if not code:
+        print("  (none)", file=sys.stderr)
+
+    print(f"\nUnresolved PR comments included: {summary.get('comments_included', 0)}",
+          file=sys.stderr)
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     settings = load_settings()
@@ -53,6 +86,8 @@ def main(argv=None) -> int:
 
     out = write_report(report, args.report)
     L.step(f"report written: {out}")
+
+    _print_context_summary(report.context_summary)
 
     gate = report.gate
     print(f"\n{gate.status}  score={gate.score}/100  "
