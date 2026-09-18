@@ -11,6 +11,9 @@ import json
 import re
 from typing import Dict, Optional, Union
 
+from ..context.tokens import count_tokens
+from .base import Usage
+
 _TARGET_RE = re.compile(r'the file "([^"]+)"')
 
 Response = Union[str, dict]
@@ -25,6 +28,7 @@ class MockProvider:
         self.default = default
         self.raw = raw
         self.calls = []  # list of (system, user) for assertions
+        self.usage = Usage()  # offline estimate (~4 chars/token), same heuristic as the context budget
 
     def _match(self, user: str) -> Optional[Response]:
         m = _TARGET_RE.search(user)
@@ -37,8 +41,11 @@ class MockProvider:
     def complete(self, system: str, user: str) -> str:
         self.calls.append((system, user))
         if self.raw is not None:
-            return self.raw
-        resp = self._match(user)
-        if resp is None:
-            resp = {"summary": "No issues found in the provided context.", "findings": []}
-        return resp if isinstance(resp, str) else json.dumps(resp)
+            text = self.raw
+        else:
+            resp = self._match(user)
+            if resp is None:
+                resp = {"summary": "No issues found in the provided context.", "findings": []}
+            text = resp if isinstance(resp, str) else json.dumps(resp)
+        self.usage.add(count_tokens(system) + count_tokens(user), count_tokens(text))
+        return text

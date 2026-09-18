@@ -6,6 +6,7 @@ tests and offline dev (PRD s6).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -16,8 +17,27 @@ class LLMError(RuntimeError):
     """Provider call failed (network, auth, quota, timeout)."""
 
 
+@dataclass
+class Usage:
+    """Running token count for one provider instance, across every ``complete()`` call
+    (including repair retries -- PRD s6). Providers accumulate into this on each call so
+    the pipeline can read a total after the per-file review loop."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+
+    def add(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += prompt_tokens + completion_tokens
+        self.calls += 1
+
+
 class LLMProvider(Protocol):
     name: str
+    usage: Usage
 
     def complete(self, system: str, user: str) -> str:
         """Return the model's raw text response (expected to be a JSON object)."""

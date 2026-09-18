@@ -80,6 +80,18 @@ class DroppedFinding(BaseModel):
     reason: str
 
 
+class TokenUsage(BaseModel):
+    """Tokens consumed by the LLM across the whole PR review (every changed-file call,
+    including repair retries -- PRD s6). For the ``openai`` provider these are the exact
+    counts reported by the API; for ``mock`` they are the same offline ~4-chars/token
+    estimate the context budget uses."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    calls: int = 0
+
+
 class GateResult(BaseModel):
     status: Literal["PASS", "CHANGES REQUESTED"]
     exit_code: int
@@ -111,3 +123,4 @@ class ReviewReport(BaseModel):
     duration_seconds: float = 0.0
     context_budget: dict = Field(default_factory=dict)
     context_summary: dict = Field(default_factory=dict)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)

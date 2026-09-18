@@ -22,7 +22,7 @@ from .context.repo_view import LocalRepoView
 from .git_ops import commit_messages, current_sha, resolve_sha, unified_diff
 from .llm.base import build_provider, system_prompt, user_prompt
 from .llm.contract import review_file
-from .models import Finding, GateResult, ReviewReport
+from .models import Finding, GateResult, ReviewReport, TokenUsage
 from .publish.formatter import inline_comment, summary_comment
 from .publish.github_client import GitHubClient, GitHubError
 from .review.dedup import dedupe_findings
@@ -182,12 +182,15 @@ def run(settings, inp: RunInputs) -> ReviewReport:
                          repo=repo_slug, target_branch=pr_info.target_branch,
                          source_branch=pr_info.source_branch)
         L.step(f"LLM review: {change.file}")
+        before = provider.usage.total_tokens
         res = review_file(provider, system, up, change.file)
+        used = provider.usage.total_tokens - before
         if res.status == "failed":
             L.warn(f"{change.file}: {res.error}")
         else:
             L.step(f"{change.file}: {len(res.findings)} raw finding(s)"
                    + (" (repaired)" if res.repaired else ""))
+        L.step(f"{change.file}: {used} tok consumed")
         results.append(res)
 
     raw_findings: List[Finding] = [f for r in results if r.status == "ok" for f in r.findings]
@@ -208,6 +211,11 @@ def run(settings, inp: RunInputs) -> ReviewReport:
                           reasons=gate.reasons + ["every changed file failed LLM review"])
     L.step(f"gate: {gate.status} (score {gate.score}, exit {gate.exit_code})")
 
+    token_usage = TokenUsage(**provider.usage.__dict__)
+    L.step(f"token usage: {token_usage.total_tokens} tok "
+           f"({token_usage.prompt_tokens} prompt + {token_usage.completion_tokens} completion) "
+           f"across {token_usage.calls} LLM call(s)")
+
     report = ReviewReport(
         repo=repo_slug, pr=pr_info.id, base=pr_info.target_branch, head=pr_info.source_branch,
         commit=commit_sha, provider=provider.name,
@@ -217,11 +225,12 @@ def run(settings, inp: RunInputs) -> ReviewReport:
         duration_seconds=round(time.monotonic() - started, 2),
         context_budget=ctx.budget,
         context_summary=_context_summary(ctx),
+        token_usage=token_usage,
     )
 
     if inp.publish and client:
         _publish(client, pr_info, commit_sha, findings, gate, provider.name, failed_files,
-                 inp.status_url, _spans_by_file(ctx.changes))
+                 inp.status_url, _spans_by_file(ctx.changes), token_usage)
     elif inp.publish:
         L.warn("--publish set but no GitHub client (need GITHUB_TOKEN + GITHUB_REPOSITORY); skipping")
 
@@ -235,7 +244,7 @@ def _overall_summary(results, gate: GateResult) -> str:
 
 
 def _publish(client, pr_info, commit_sha, findings, gate, provider_name, failed_files,
-             status_url, spans_by_file):
+             status_url, spans_by_file, token_usage: TokenUsage):
     if pr_info.id is not None:
         unplaced: List[Finding] = []
         for f in findings:
@@ -250,7 +259,8 @@ def _publish(client, pr_info, commit_sha, findings, gate, provider_name, failed_
                     L.warn(f"inline comment failed for {f.file}:{f.line}: {e}")
             unplaced.append(f)
         body = summary_comment(findings, gate, provider=provider_name,
-                               failed_files=failed_files, unplaced=unplaced)
+                               failed_files=failed_files, unplaced=unplaced,
+                               token_usage=token_usage)
         _safe(lambda: client.post_summary_comment(pr_info.id, body))
         L.step("posted summary + inline comments")
     else:

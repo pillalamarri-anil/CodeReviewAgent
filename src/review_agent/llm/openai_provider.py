@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import LLMError
+from .base import LLMError, Usage
 
 
 class OpenAIProvider:
@@ -25,6 +25,7 @@ class OpenAIProvider:
 
         self._model = settings.openai_model
         self._max_tokens = settings.llm_max_tokens
+        self.usage = Usage()
         self._client = OpenAI(
             api_key=settings.openai_key(),
             base_url=settings.openai_base_url or None,
@@ -46,6 +47,9 @@ class OpenAIProvider:
             )
         except Exception as e:  # openai raises many subclasses; treat all as call failure
             raise LLMError(f"OpenAI call failed: {e}") from e
+
+        if resp.usage is not None:
+            self.usage.add(resp.usage.prompt_tokens, resp.usage.completion_tokens)
 
         choice = (resp.choices or [None])[0]
         content = getattr(getattr(choice, "message", None), "content", None)

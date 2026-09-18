@@ -132,6 +132,10 @@ def main(argv=None) -> int:
     if args.show_findings:
         _print_findings_summary(report)
 
+    tu = report.token_usage
+    print(f"\nTokens used: {tu.total_tokens} ({tu.prompt_tokens} prompt + "
+          f"{tu.completion_tokens} completion) across {tu.calls} LLM call(s)", file=sys.stderr)
+
     gate = report.gate
     print(f"\n{gate.status}  score={gate.score}/100  "
           f"CRITICAL={gate.counts['CRITICAL']} HIGH={gate.counts['HIGH']} "

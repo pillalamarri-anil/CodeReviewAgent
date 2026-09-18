@@ -6,10 +6,10 @@ Inline comment:  ``severity | category``, one-line problem, recommendation, conf
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from ..context.comments_provider import AI_INLINE_MARKER, AI_SUMMARY_MARKER
-from ..models import Finding, GateResult, Severity
+from ..models import Finding, GateResult, Severity, TokenUsage
 
 _SEV_ORDER = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
 _SEV_EMOJI = {Severity.CRITICAL: "🟥", Severity.HIGH: "🟧", Severity.MEDIUM: "🟨", Severity.LOW: "🟦"}
@@ -35,7 +35,9 @@ def inline_comment(f: Finding) -> str:
 
 
 def summary_comment(findings: List[Finding], gate: GateResult, *, provider: str,
-                    failed_files: List[str], unplaced: List[Finding]) -> str:
+                    failed_files: List[str], unplaced: List[Finding],
+                    token_usage: Optional[TokenUsage] = None) -> str:
+    token_usage = token_usage or TokenUsage()
     counts = gate.counts
     icon = "✅" if gate.status == "PASS" else "❌"
     out = [
@@ -67,5 +69,6 @@ def summary_comment(findings: List[Finding], gate: GateResult, *, provider: str,
         out += ["", "> ⚠️ The LLM review failed for: " + ", ".join(f"`{p}`" for p in failed_files) +
                 ". These files were not reviewed."]
 
-    out += ["", f"<sub>provider: {provider} · {len(findings)} finding(s) after validation & dedup</sub>"]
+    out += ["", f"<sub>provider: {provider} · {len(findings)} finding(s) after validation & dedup "
+                f"· {token_usage.total_tokens} tok consumed</sub>"]
     return "\n".join(out)
